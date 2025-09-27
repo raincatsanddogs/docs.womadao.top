@@ -166,7 +166,7 @@ const config: Config = {
             },
             {
               label: '音铃的博客',
-              href: 'https://blog.twiyin0.cn',
+              href: 'https://blog.iin0.cn',
             },
             {
               label: 'vlssu公益服',
