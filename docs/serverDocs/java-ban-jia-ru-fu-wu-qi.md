@@ -32,7 +32,7 @@ description: java版玩家加入服务器
 
 :::danger 注意  
 关于以下更多内容，可以查看 **[HMCL 启动器配置](../LancherConfig/README.md)**  
-新整合包[**下载地址**](https://pds.zroevn.cn/s/4dLuR9cGyUS)
+新整合包[**下载地址**](https://pds.zroevn.cn/disk/s/BFWdyLaCPPa)
 :::
 
 ### 下载整合包
@@ -41,7 +41,7 @@ description: java版玩家加入服务器
 打开是这个样子，
 
 ![](<../assets/pkg1.png>)   
->打开目录"Java版"，如图所示
+>打开目录"游戏资源"，如图所示
 ![](<../assets/pkg2.png>)   
 >按需选择自己的系统
 （目前mac/linux的整合包正在搁置，咕咕咕）
@@ -54,6 +54,10 @@ description: java版玩家加入服务器
 [Java 安装](../First/Readme/java-an-zhuang-ji-shi-yong)
 
 打开文件夹所在位置，解压整合包
+
+:::note[提示]
+若使用Windows自带的解压工具解压时出现问题，请使用其他解压缩工具（如7-zip）
+:::
 
 打开解压后的整合包文件夹  
 双击 HMCL-3.3.9 或者 Plain Craft Launcher 2 ，打开启动器  
