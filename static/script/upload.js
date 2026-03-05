@@ -5,18 +5,38 @@ const { Client } = require('ssh2');
 const crypto = require('crypto');
 const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 
+// Parse hosts configuration from environment variables
+function parseHostsConfig() {
+  if (!process.env.HOSTS_CONFIG) {
+    throw new Error('HOSTS_CONFIG environment variable is required');
+  }
+  
+  if (!process.env.SSH_PRIVATE_KEY) {
+    throw new Error('SSH_PRIVATE_KEY environment variable is required');
+  }
+  
+  try {
+    const hosts = JSON.parse(process.env.HOSTS_CONFIG);
+    const privateKey = process.env.SSH_PRIVATE_KEY;
+    
+    // Add private key to all hosts
+    return hosts.map(host => ({
+      ...host,
+      privateKey: privateKey
+    }));
+  } catch (err) {
+    console.error('Failed to parse HOSTS_CONFIG:', err.message);
+    throw new Error('Invalid HOSTS_CONFIG JSON format');
+  }
+}
+
 // Configuration
 const config = {
   localDir: path.resolve(__dirname, '../../build'),
   archiveFileName: 'build.tar.gz',
   
-  // Remote server configuration
-  remoteHost: process.env.HOSTNAME,
-  remotePort: 22,
-  remoteUsername: process.env.USERNAME,
-  remotePassword: process.env.PASSWD,
-  remoteDir: process.env.REMOTE_DIR,
-  cleanup: true,
+  // Multiple remote servers configuration from environment variables
+  hosts: parseHostsConfig(),
   
   // R2 configuration
   r2Domain: process.env.R2DOMAIN,
@@ -114,17 +134,19 @@ async function getR2ObjectMD5() {
   return response.ETag.replace(/"/g, '');
 }
 
-// Remote server operations
-async function remoteDownloadAndExtract(expectedMD5) {
+// Remote server operations for a single host
+async function remoteDownloadAndExtract(hostConfig, expectedMD5) {
   return new Promise((resolve, reject) => {
     const conn = new Client();
     
+    console.log(`\n=== Deploying to ${hostConfig.name} (${hostConfig.host}) ===`);
+    
     conn.on('ready', () => {
-      console.log('SSH connection established');
+      console.log(`[${hostConfig.name}] SSH connection established`);
       
       // Generate a temporary path on remote server
-      const remoteArchivePath = path.posix.join(config.remoteDir, config.archiveFileName);
-      const tempDownloadPath = path.posix.join(config.remoteDir, `temp_${config.archiveFileName}`);
+      const remoteArchivePath = path.posix.join(hostConfig.remoteDir, config.archiveFileName);
+      const tempDownloadPath = path.posix.join(hostConfig.remoteDir, `temp_${config.archiveFileName}`);
       
       // Commands to execute on remote server
       const downloadUrl = `${config.r2Domain}/${config.archiveFileName}`;
@@ -148,14 +170,14 @@ async function remoteDownloadAndExtract(expectedMD5) {
         
         // Extract
         `echo "Extracting archive..."`,
-        `tar -xzvf ${remoteArchivePath} -C ${config.remoteDir}`,
+        `tar -xzvf ${remoteArchivePath} -C ${hostConfig.remoteDir}`,
         
         // Cleanup if configured
-        config.cleanup ? `rm -f ${remoteArchivePath}` : 'true',
+        hostConfig.cleanup ? `rm -f ${remoteArchivePath}` : 'true',
         `echo "Operation completed successfully"`
       ].join('\n');
       
-      console.log('Executing remote commands...');
+      console.log(`[${hostConfig.name}] Executing remote commands...`);
       conn.exec(commands, (err, stream) => {
         if (err) {
           reject(err);
@@ -163,28 +185,31 @@ async function remoteDownloadAndExtract(expectedMD5) {
         }
 
         stream.on('data', (data) => {
-          console.log('REMOTE:', data.toString());
+          console.log(`[${hostConfig.name}] REMOTE:`, data.toString());
         });
 
         stream.on('close', (code, signal) => {
           if (code === 0) {
-            console.log('Remote operations completed successfully');
+            console.log(`[${hostConfig.name}] ✓ Deployment completed successfully`);
             resolve();
           } else {
-            reject(new Error(`Remote operations failed with code ${code}`));
+            reject(new Error(`[${hostConfig.name}] Deployment failed with code ${code}`));
           }
           conn.end();
         });
 
         stream.stderr.on('data', (data) => {
-          console.error('Remote error:', data.toString());
+          console.error(`[${hostConfig.name}] Remote error:`, data.toString());
         });
       });
+    }).on('error', (err) => {
+      reject(new Error(`[${hostConfig.name}] SSH connection error: ${err.message}`));
     }).connect({
-      host: config.remoteHost,
-      port: config.remotePort,
-      username: config.remoteUsername,
-      password: config.remotePassword,
+      host: hostConfig.host,
+      port: hostConfig.port,
+      username: hostConfig.username,
+      privateKey: hostConfig.privateKey,
+      passphrase: hostConfig.passphrase
     });
   });
 }
@@ -192,7 +217,8 @@ async function remoteDownloadAndExtract(expectedMD5) {
 // Main function
 async function main() {
   try {
-    console.log('Starting process...');
+    console.log('Starting deployment process...');
+    console.log(`Target hosts: ${config.hosts.length}`);
     
     // Step 1: Create archive
     const archiveFilePath = await createTarGz();
@@ -209,15 +235,43 @@ async function main() {
     //   throw new Error(`MD5 hash mismatch! Local: ${localMD5}, R2: ${remoteMD5}`);
     // }
     
-    // Step 4: Remote server operations
-    // await remoteDownloadAndExtract(localMD5);
-    await remoteDownloadAndExtract(localMD5);
+    // Step 4: Deploy to all remote servers
+    console.log('\n=== Starting deployment to remote servers ===');
+    const deploymentResults = [];
+    
+    for (const hostConfig of config.hosts) {
+      try {
+        await remoteDownloadAndExtract(hostConfig, localMD5);
+        deploymentResults.push({ host: hostConfig.name, success: true });
+      } catch (error) {
+        console.error(`\n✗ Deployment to ${hostConfig.name} failed:`, error.message);
+        deploymentResults.push({ host: hostConfig.name, success: false, error: error.message });
+        // Continue with other hosts even if one fails
+      }
+    }
     
     // Cleanup local archive
     fs.unlinkSync(archiveFilePath);
-    console.log('Local archive removed');
+    console.log('\nLocal archive removed');
     
-    console.log('Process completed successfully!');
+    // Summary
+    console.log('\n=== Deployment Summary ===');
+    const successful = deploymentResults.filter(r => r.success).length;
+    const failed = deploymentResults.filter(r => !r.success).length;
+    
+    deploymentResults.forEach(result => {
+      const status = result.success ? '✓ SUCCESS' : '✗ FAILED';
+      console.log(`${status}: ${result.host}${result.error ? ` (${result.error})` : ''}`);
+    });
+    
+    console.log(`\nTotal: ${config.hosts.length} | Successful: ${successful} | Failed: ${failed}`);
+    
+    if (failed > 0) {
+      console.error('\nProcess completed with errors!');
+      process.exit(1);
+    }
+    
+    console.log('\nProcess completed successfully!');
   } catch (error) {
     console.error('Process failed:', error);
     process.exit(1);
